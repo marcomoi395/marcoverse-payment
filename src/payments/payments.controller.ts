@@ -18,9 +18,8 @@ export class PaymentsController {
     return this.paymentService.getPayments();
   }
 
-  @Get('send-webhook')
-  sendWebhook() {
-    return this.paymentService.sendPayments()
-  }
-
+  // @Get('send-webhook')
+  // sendWebhook() {
+  //   return this.paymentService.sendPayments()
+  // }
 }

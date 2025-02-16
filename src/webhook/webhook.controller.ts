@@ -10,7 +10,6 @@ export class WebhookController {
 
   @OnEvent(PAYMENT_CREATED)
   handlePaymentCreatedEvent(payments: Payment[]) {
-    console.log("[2]::");
     this.webhookService.sendPayments(payments);
   }
 

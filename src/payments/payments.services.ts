@@ -80,7 +80,6 @@ export class PaymentService implements OnApplicationBootstrap {
   }
 
   sendPayments() {
-    console.log("[1]::");
     const payment: Payment[] = this.getPayments();
     this.eventEmitter.emit(PAYMENT_CREATED, payment);
   }
