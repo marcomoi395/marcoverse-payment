@@ -7,6 +7,7 @@ import { GateType, Payment } from '../gate.interface';
 import { Gate } from '../gates.services';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { sleep } from 'src/shards/helpers/sleep';
+import { log } from 'console';
 
 interface MbBankTransactionDto {
   refNo: string;
@@ -67,7 +68,15 @@ export class MBBankService extends Gate {
       proxy: this.getChromProxy(),
     });
     try {
-      const context = await browser.newContext();
+      const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)...',
+        viewport: { width: 1366, height: 768 },
+        locale: 'vi-VN',
+        timezoneId: 'Asia/Ho_Chi_Minh',
+        permissions: ['geolocation'],
+        geolocation: { latitude: 10.762622, longitude: 106.660172 }, // Hồ Chí Minh
+        colorScheme: 'light',
+      });
       const page = await context.newPage();
 
       console.log('Mb bank login...');
@@ -78,7 +87,7 @@ export class MBBankService extends Gate {
           const url = route.request().url();
           const resourceType = route.request().resourceType();
 
-          if (url.includes('/retail-web-internetbankingms/getCaptchaImage'))
+          if (url.includes('/api/retail-web-internetbankingms/getCaptchaImage'))
             return route.continue();
 
           if (['image', 'media'].includes(resourceType)) {
@@ -102,17 +111,21 @@ export class MBBankService extends Gate {
           route.continue();
         });
 
-      const getCaptchaWaitResponse = page.waitForResponse(
-        '**/retail-web-internetbankingms/getCaptchaImage',
-        { timeout: 60000 },
-      );
       await page.goto('https://online.mbbank.com.vn/pl/login');
+      await page.waitForSelector('img.ng-star-inserted', {
+        state: 'visible',
+        timeout: 10000,
+      });
 
-      const getCaptchaJson = await getCaptchaWaitResponse.then((d) => d.json());
+      const captchaImg = await page.locator('img.ng-star-inserted');
+      const captchaSrc = await captchaImg.getAttribute('src');
+      const base64Data = captchaSrc?.replace(/^data:image\/png;base64,/, '');
 
-      const captchaText = await this.captchaSolver.solveCaptcha(
-        getCaptchaJson.imageString,
-      );
+      if (!base64Data) {
+        throw new Error('Không lấy được mã captcha!');
+      }
+
+      const captchaText = await this.captchaSolver.solveCaptcha(base64Data);
 
       await page.locator('#form1').getByRole('img').click();
       await page.getByPlaceholder('Tên đăng nhập').click();
@@ -158,7 +171,9 @@ export class MBBankService extends Gate {
     const toDate = moment().tz('Asia/Ho_Chi_Minh').format('DD/MM/YYYY');
     const refNo =
       this.config.account.toUpperCase() +
-      moment().tz('Asia/Ho_Chi_Minh').format('DDMMYYYYHHmmssSSS');
+      '-' +
+      moment().tz('Asia/Ho_Chi_Minh').format('YYYYMMDDHHmmssSS');
+
     const dataSend = {
       accountNo: this.config.account,
       fromDate,
@@ -167,30 +182,39 @@ export class MBBankService extends Gate {
       refNo,
       deviceIdCommon: this.deviceId,
     };
+    const headers = {
+      Host: 'online.mbbank.com.vn',
+      'User-Agent':
+        'Mozilla/5.0 (X11; Linux x86_64; rv:136.0) Gecko/20100101 Firefox/136.0',
+      Accept: 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.5',
+      'Accept-Encoding': 'gzip, deflate, br',
+      Authorization:
+        'Basic RU1CUkVUQUlMV0VCOlNEMjM0ZGZnMzQlI0BGR0AzNHNmc2RmNDU4NDNm',
+      App: 'MB_WEB',
+      Refno: '03',
+      'Content-Type': 'application/json; charset=utf-8',
+      Deviceid: 'z2uax13k-mbib-0000-0000-2025040909112465',
+      'X-Request-Id': '0',
+      'Elastic-Apm-Traceparent':
+        '00-3b64d8bfc56824dd41f667d2ddc32621-7e050c8cc389a153-01',
+      Origin: 'https://online.mbbank.com.vn',
+      Referer:
+        'https://online.mbbank.com.vn/information-account/source-account',
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-origin',
+      Priority: 'u=0',
+      Te: 'trailers',
+    };
+
     try {
+      console.log('[1]::');
+
       const { data } = await axios.post<MbBankTransactionDto>(
         'https://online.mbbank.com.vn/api/retail-transactionms/transactionms/get-account-transaction-history',
-
         dataSend,
-        {
-          headers: {
-            'X-Request-Id': moment()
-              .tz('Asia/Ho_Chi_Minh')
-              .format('DDMMYYYYHHmmssSSS'),
-            'Cache-Control': 'no-cache',
-            Accept: 'application/json, text/plain, */*',
-            Authorization:
-              'Basic RU1CUkVUQUlMV0VCOlNEMjM0ZGZnMzQlI0BGR0AzNHNmc2RmNDU4NDNm',
-            Deviceid: this.deviceId,
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-            Origin: 'https://online.mbbank.com.vn',
-            Referer: 'https://online.mbbank.com.vn/',
-            Refno: refNo,
-            'Content-Type': 'application/json; charset=UTF-8',
-          },
-          httpsAgent: this.getAgent(),
-        },
+        { headers },
       );
 
       if (data.result.responseCode === 'GW200') {
@@ -219,8 +243,14 @@ export class MBBankService extends Gate {
             'Asia/Ho_Chi_Minh',
           )
           .toDate(),
-        account_receiver: Number(transaction.debitAmount) > 0 ? transaction.benAccountNo : transaction.accountNo,
-        account_sender: Number(transaction.creditAmount) > 0 ? transaction.benAccountNo : transaction.accountNo,
+        account_receiver:
+          Number(transaction.debitAmount) > 0
+            ? transaction.benAccountNo
+            : transaction.accountNo,
+        account_sender:
+          Number(transaction.creditAmount) > 0
+            ? transaction.benAccountNo
+            : transaction.accountNo,
         name_sender: transaction.benAccountName,
         gate: GateType.MBBANK,
       }));
